@@ -2,7 +2,7 @@
 {% set version = "6.7.1" %}
 
 package:
-  name: {{ name|lower }}
+  name: {{ name|lower }}-pkg
   version: {{ version }}
 
 source:
@@ -12,6 +12,7 @@ source:
       - patches/1072.patch
       - patches/1133.patch
       - patches/1278.patch
+      - patches/1374.patch
       - patches/version.patch
   - url: https://github.com/fortran-lang/test-drive/releases/download/v0.5.0/test-drive-0.5.0.tar.xz
     sha256: 38c29f9366ed6fb90ff10fcb7efe2cebf2f3ba003edb08e6f56d2d758a070cee
@@ -19,40 +20,80 @@ source:
     
 
 build:
-  number: 4
-  run_exports:
-    - {{ pin_subpackage('xtb', max_pin='x.x') }}
+  number: 5
 
-requirements:
-  build:
-    - {{ compiler('c') }}  # [unix]
-    - {{ compiler('fortran') }}  # [unix]
-    - {{ stdlib('c') }}  # [unix]
-    - {{ compiler('m2w64_c') }}  # [win]
-    - {{ compiler('m2w64_fortran') }}  # [win]
-    - {{ stdlib('m2w64_c') }}  # [win]
-    - meson
-    - meson 1.7.*  # [unix]
-    - ninja
-    - asciidoctor  # [unix]
-    - pkg-config
-    - llvm-openmp  # [osx]
-    - libgomp  # [linux]
-  host:
-    - dftd4
-    - libblas
-    - liblapack
-    - mctc-lib
-    - multicharge
-    - tblite
+outputs:
+  - name: {{ name }}
+    script: build_pkg.sh   # [unix]
+    script: build_pkg.bat  # [win]
+    build:
+      string: {{ module_abi }}_h{{ PKG_HASH }}_{{ PKG_BUILDNUM }}
+      run_exports:
+        - {{ pin_subpackage(name, max_pin='x.x') }}
+      ignore_run_exports:
+        - test-drive  # test dependency only
 
+    requirements:
+      build:
+        - {{ compiler('c') }}  # [unix]
+        - {{ compiler('fortran') }}  # [unix]
+        - {{ stdlib('c') }}  # [unix]
+        - {{ compiler('m2w64_c') }}  # [win]
+        - {{ compiler('m2w64_fortran') }}  # [win]
+        - {{ stdlib('m2w64_c') }}  # [win]
+        - meson 1.7.*
+        - ninja
+        - asciidoctor  # [unix]
+        - pkg-config
+        - llvm-openmp  # [osx]
+      host:
+        - cpcm-x-devel * {{ module_abi }}_*
+        - dftd4-devel * {{ module_abi }}_*
+        - llvm-openmp  # [osx]
+        - libgomp  # [linux]
+        - libblas
+        - liblapack
+        - mctc-lib-devel * {{ module_abi }}_*
+        - multicharge-devel * {{ module_abi }}_*
+        - tblite-devel * {{ module_abi }}_*
+        - test-drive-devel * {{ module_abi }}_*
 
-test:
-  commands:
-    - xtb --version
+    test:
+      requires:
+        - pkg-config
+      commands:
+        - {{ name }} --version  # [build_platform == target_platform]
+        - test -f $PREFIX/lib/lib{{ name }}$SHLIB_EXT  # [unix]
+        - test -f $PREFIX/include/{{ name }}.h  # [unix]
+        - test ! -f $PREFIX/lib/lib{{ name }}.a  # [unix]
+        - pkg-config {{ name }} --exact-version {{ version }}
+        - if not exist %LIBRARY_BIN%\\lib{{ name }}-6.dll exit 1  # [win]
+        - if not exist %LIBRARY_PREFIX%\\include\\{{ name }}.h exit 1  # [win]
+
+  - name: {{ name }}-devel
+    build:
+      string: {{ module_abi }}_h{{ PKG_HASH }}_{{ PKG_BUILDNUM }}
+      run_exports:
+        - {{ pin_subpackage(name, max_pin='x.x') }} {{ module_abi }}_*
+
+    requirements:
+      run:
+        - {{ pin_subpackage(name, max_pin='x.x') }} {{ module_abi }}_*
+
+    test:
+      requires:
+        - pkg-config
+      commands:
+        - {{ name }} --version  # [build_platform == target_platform]
+        - test -f $PREFIX/lib/lib{{ name }}$SHLIB_EXT  # [unix]
+        - test -f $PREFIX/include/{{ name }}.h  # [unix]
+        - test ! -f $PREFIX/lib/lib{{ name }}.a  # [unix]
+        - pkg-config {{ name }} --exact-version {{ version }}
+        - if not exist %LIBRARY_BIN%\\lib{{ name }}-6.dll exit 1  # [win]
+        - if not exist %LIBRARY_PREFIX%\\include\\{{ name }}.h exit 1  # [win]
 
 about:
-  home: https://www.chemie.uni-bonn.de/pctc/mulliken-center/software/xtb
+  home: https://xtb-docs.readthedocs.io/
   license: LGPL-3.0-or-later
   license_family: LGPL
   license_file:

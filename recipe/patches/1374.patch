@@ -1,0 +1,835 @@
+diff --git a/src/dipro.F90 b/src/dipro.F90
+index 577a937c7..284b5a871 100644
+--- a/src/dipro.F90
++++ b/src/dipro.F90
+@@ -105,7 +105,7 @@ subroutine get_jab(env, tblite, mol, fragment, dipro)
+    type(wavefunction_type), allocatable :: wfx(:)
+ 
+    !> Molecular gradient, strain derivatives
+-   real(wp), allocatable :: gradient(:, :), sigma(:,:), nel(:)
++   real(wp), allocatable :: gradient(:, :), sigma(:,:), nel(:), homo(:,:)
+    real(wp), allocatable :: overlap(:, :), trans(:, :), wbo(:, :), chrg(:), p2mat(:,:), coeff2(:,:),loc(:,:)
+    real(wp), allocatable :: orbital(:, :, :), scmat(:, :), fdim(:, :), scratch(:), efrag(:),y(:,:),Edim(:,:)
+    integer, allocatable :: spinfrag(:), start_index(:),end_index(:),orbprint(:)
+@@ -206,7 +206,7 @@ subroutine get_jab(env, tblite, mol, fragment, dipro)
+    nao = size(wfn%emo)
+    allocate(orbital(nao, nfrag,nao), efrag(nfrag), scmat(nao, nao), fdim(nao, nao), &
+       & scratch(nao), mfrag(nfrag), wfx(nfrag), chrg(nfrag), spinfrag(nfrag), &
+-      & start_index(nfrag),end_index(nfrag),orbprint(nfrag),nel(nfrag))
++      & start_index(nfrag), end_index(nfrag), orbprint(nfrag), nel(nfrag), homo(nfrag, 2))
+ 
+ !==================================external files CHRG & UHF read-in====================================
+ 
+@@ -270,7 +270,7 @@ subroutine get_jab(env, tblite, mol, fragment, dipro)
+       call new_wavefunction(wfx(ifr), mfrag(ifr)%nat, fcalc(ifr)%bas%nsh, fcalc(ifr)%bas%nao, &
+          & 1, set%etemp * ktoau)
+ 
+-     !> mol%type (dimer) == mfrag%type (fragments), wfn (dimer) == wfx (fragments), calc (dimer)==fcalc(fragments)
++      !> mol%type (dimer) == mfrag%type (fragments), wfn (dimer) == wfx (fragments), calc (dimer)==fcalc(fragments)
+       wfx%nspin=1
+       call xtb_singlepoint(ctx, mfrag(ifr), fcalc(ifr), wfx(ifr), tblite%accuracy, energy)
+       if (ctx%failed()) then
+@@ -280,6 +280,14 @@ subroutine get_jab(env, tblite, mol, fragment, dipro)
+ 
+       nel(ifr)=wfx(ifr)%nel(1)+wfx(ifr)%nel(2)
+ 
++      ! Find HOMO index
++      homo(ifr,1) = merge(wfx(ifr)%nel(1)+1, wfx(ifr)%nel(1), mod(wfx(ifr)%nel(1), 1.0_wp) > 0.5_wp)
++      if (size(wfx(ifr)%nel, 1) == 2) then
++         homo(ifr,2) = merge(wfx(ifr)%nel(2)+1, wfx(ifr)%nel(2), mod(wfx(ifr)%nel(2), 1.0_wp) > 0.5_wp)
++      else
++         homo(ifr,2) = homo(ifr,1)
++      end if
++
+ !==================================DIPRO==================================================
+ 
+       do j = 1, fcalc(ifr)%bas%nao
+@@ -313,8 +321,8 @@ subroutine get_jab(env, tblite, mol, fragment, dipro)
+ 
+    do ifr=1,nfrag
+       do j = 1, fcalc(ifr)%bas%nao
+-         if (wfx(ifr)%emo(j,1) .ge. (wfx(ifr)%emo(wfx(ifr)%homo(2),1) - dipro%othr/autoev) .and.&
+-           & wfx(ifr)%emo(j,1) .le. (wfx(ifr)%emo(wfx(ifr)%homo(2)+1,1) + dipro%othr/autoev)) then
++         if (wfx(ifr)%emo(j,1) .ge. (wfx(ifr)%emo(homo(ifr,2),1) - dipro%othr/autoev) .and.&
++           & wfx(ifr)%emo(j,1) .le. (wfx(ifr)%emo(homo(ifr,2)+1,1) + dipro%othr/autoev)) then
+            if (start_index(ifr).eq.-1) then 
+                    start_index(ifr) = j
+               end if
+@@ -343,7 +351,7 @@ subroutine get_jab(env, tblite, mol, fragment, dipro)
+    !> scmat=S_dim*C_dim
+    call gemm(overlap, coeff2, scmat)
+    do j = start_index(1), end_index(1)
+-      orbprint(1)=wfx(1)%homo(max(2,1))-j
++      orbprint(1)=homo(1,2)-j
+ 
+       y(:,1)=0
+       !> gemv(amat, xvec,yvec,a1,a2,transa): X=a1*Amat*xvec+a2*yvec
+@@ -355,7 +363,7 @@ subroutine get_jab(env, tblite, mol, fragment, dipro)
+       efrag(1)=dot( y(:,1), scratch)
+ 
+       do k = start_index(2), end_index(2)
+-         orbprint(2)=wfx(2)%homo(max(2,1))-k
++         orbprint(2)=homo(2,2)-k
+ 
+          y(:,2)=0
+          !> y_mon2(ifr)=C_mon2(k)*S_dim*C_dim
+diff --git a/src/ptb/CMakeLists.txt b/src/ptb/CMakeLists.txt
+index 68046c7a0..7095dc3a3 100644
+--- a/src/ptb/CMakeLists.txt
++++ b/src/ptb/CMakeLists.txt
+@@ -35,6 +35,7 @@ list(APPEND srcs
+   "${dir}/plusu.F90"
+   "${dir}/property.F90"
+   "${dir}/response.F90"
++  "${dir}/solver.F90"
+ )
+ 
+ set(srcs ${srcs} PARENT_SCOPE)
+diff --git a/src/ptb/calculator.F90 b/src/ptb/calculator.F90
+index 1c3bd9a0e..46bc93821 100644
+--- a/src/ptb/calculator.F90
++++ b/src/ptb/calculator.F90
+@@ -38,7 +38,7 @@ module xtb_ptb_calculator
+ #if WITH_TBLITE
+    use xtb_tblite_mapping, only : convert_tblite_to_wfn, convert_tblite_to_results
+ 
+-   use multicharge_model, only: new_mchrg_model, mchrg_model_type
++   use multicharge_model, only: new_eeq_model, mchrg_model_type, eeq_model
+ 
+    use tblite_basis_type, only: basis_type
+    use tblite_context, only: context_type
+@@ -71,7 +71,7 @@ module xtb_ptb_calculator
+       type(basis_type) :: bas, cbas
+ 
+       !> EEQ Model
+-      type(mchrg_model_type) :: eeqmodel
++      class(mchrg_model_type), allocatable :: eeqmodel
+ #endif
+ 
+       !> Parametrisation data base
+@@ -127,6 +127,8 @@ subroutine newPTBCalculator(env, struc, calc, accuracy)
+ #if WITH_TBLITE
+       !> mctc-io structure type
+       type(structure_type) :: mol
++      type(eeq_model), allocatable :: tmp_eeqmodel
++      type(error_type), allocatable :: error
+ 
+       mol = struc
+ 
+@@ -164,8 +166,14 @@ subroutine newPTBCalculator(env, struc, calc, accuracy)
+       call add_core_basis(mol, calc%ptbData%corepotential, calc%cbas)
+       
+       !> set up the EEQ model
+-      call new_mchrg_model(calc%eeqmodel, chi=calc%ptbData%eeq%chi, &
+-      & rad=calc%ptbData%eeq%alp, eta=calc%ptbData%eeq%gam, kcn=calc%ptbData%eeq%cnf)
++      allocate(tmp_eeqmodel)
++      call new_eeq_model(tmp_eeqmodel, mol, error, chi=calc%ptbData%eeq%chi, &
++      & rad=calc%ptbData%eeq%alp, eta=calc%ptbData%eeq%gam, kcnchi=calc%ptbData%eeq%cnf)
++      if (allocated(error)) then
++         call env%error('Could not initialize EEQ model', source)
++         return
++      end if
++      call move_alloc(tmp_eeqmodel, calc%eeqmodel)
+ 
+       !> check for external point charge field
+       !> not implemented yet
+diff --git a/src/ptb/meson.build b/src/ptb/meson.build
+index 5698396ec..3e64d46a9 100644
+--- a/src/ptb/meson.build
++++ b/src/ptb/meson.build
+@@ -33,4 +33,5 @@ srcs += files(
+   'plusu.F90',
+   'property.F90',
+   'response.F90',
++  'solver.F90',
+ )
+diff --git a/src/ptb/ncoord.F90 b/src/ptb/ncoord.F90
+index e7e646147..8adb0b6ab 100644
+--- a/src/ptb/ncoord.F90
++++ b/src/ptb/ncoord.F90
+@@ -26,7 +26,7 @@ module xtb_ptb_ncoord
+    use mctc_env, only: wp
+    use mctc_io, only: structure_type
+ 
+-   use tblite_data_covrad, only: get_covalent_rad
++   use mctc_data, only: get_covalent_rad
+ 
+    implicit none
+ 
+diff --git a/src/ptb/response.F90 b/src/ptb/response.F90
+index 4a8344a8f..03696d40f 100644
+--- a/src/ptb/response.F90
++++ b/src/ptb/response.F90
+@@ -45,13 +45,13 @@ module xtb_ptb_response
+    use xtb_ptb_data, only: TPTBData
+    use xtb_ptb_integral_types, only: aux_integral_type
+    use xtb_ptb_param, only: ptbGlobals
+-   use xtb_ptb_scf, only: get_density
+    use xtb_ptb_mmlpopanalysis, only: get_mml_shell_charges
+    use xtb_ptb_hamiltonian, only: get_hamiltonian
+    use xtb_ptb_guess, only: get_psh_from_qsh
+    use xtb_ptb_paulixc, only: calc_Vxc_pauli
+    use xtb_ptb_coulomb, only: coulomb_potential
+    use xtb_ptb_plusu, only: plusu_potential_type
++   use xtb_ptb_solver, only : ptb_solver_type, new_ptb_solver
+ 
+    implicit none
+    private
+@@ -98,22 +98,21 @@ subroutine numgrad_polarizability(ctx, data, mol, bas, wfn, ints, auxints, &
+       real(wp), intent(out) :: alpha(3, 3)
+       !> (optional) Electric field
+       real(wp), intent(in), optional :: efield(:)
+-      !> Error type
++
++      ! Error type
+       type(error_type), allocatable :: error
+-      !> Potential type
++      ! Potential type
+       type(potential_type) :: pot
+-      !> Restart data for interaction containers
++      ! Restart data for interaction containers
+       type(container_cache) :: icache
+-      !> Electric field object
++      ! Electric field object
+       type(electric_field) :: efield_object
+-      !> Electronic solver
+-      class(solver_type), allocatable :: solver
+-      !> Electronic entropy
+-      real(wp) :: ts
+-      !> Molecular dipole moment
++      ! PTB electronic solver
++      type(ptb_solver_type) :: ptbsolver
++      ! Molecular dipole moment
+       real(wp) :: dip_plus(3), dip_minus(3)
+       real(wp) :: eff_ef(3), tmp_ef(3)
+-      !> Loop variables
++      ! Loop variables
+       integer :: k, i, j
+ 
+ 
+@@ -121,9 +120,6 @@ subroutine numgrad_polarizability(ctx, data, mol, bas, wfn, ints, auxints, &
+       logical, parameter :: debug(4) = &
+                [ .false., .false., .false., .false. ]
+ 
+-      !> Solver for the effective Hamiltonian
+-      call ctx%new_solver(solver, bas%nao)
+-
+       alpha = 0.0_wp
+       if (present(efield)) then
+          eff_ef = efield
+@@ -158,7 +154,8 @@ subroutine numgrad_polarizability(ctx, data, mol, bas, wfn, ints, auxints, &
+          endif
+             
+          !> Solve effective Hamiltonian including the electric field
+-         call get_density(wfn_tmp, solver, ints, ts, error, ptbGlobals%geps, ptbGlobals%geps0)
++         call new_ptb_solver(ptbsolver, wfn%nel, wfn%kt, ptbGlobals%geps, ptbGlobals%geps0)
++         call ptbsolver%get_density(wfn_tmp%coeff, ints%overlap, wfn_tmp%emo, wfn_tmp%focc, wfn_tmp%density, error)
+          if (allocated(error)) then
+             call ctx%set_error(error)
+             return
+@@ -209,7 +206,8 @@ subroutine numgrad_polarizability(ctx, data, mol, bas, wfn, ints, auxints, &
+          endif
+          
+          !> Solve effective Hamiltonian including the electric field
+-         call get_density(wfn_tmp, solver, ints, ts, error, ptbGlobals%geps, ptbGlobals%geps0)
++         call new_ptb_solver(ptbsolver, wfn%nel, wfn%kt, ptbGlobals%geps, ptbGlobals%geps0)
++         call ptbsolver%get_density(wfn_tmp%coeff, ints%overlap, wfn_tmp%emo, wfn_tmp%focc, wfn_tmp%density, error)
+          if (allocated(error)) then
+             call ctx%set_error(error)
+             return
+@@ -235,7 +233,8 @@ subroutine numgrad_polarizability(ctx, data, mol, bas, wfn, ints, auxints, &
+             & ves_twostepscf, CN_plusU, efield_object, dip_plus)
+          if (ctx%failed()) return
+ 
+-         alpha(k, 1:3) = -(dip_minus - dip_plus) / (2.0_wp * delta)                               ! numerical diff. dmu/dfield
++         ! numerical diff. dmu/dfield
++         alpha(k, 1:3) = -(dip_minus - dip_plus) / (2.0_wp * delta)
+       end do cart_coord_loop
+ 
+       !> Symmetrization of polarizability tensor
+@@ -278,34 +277,30 @@ subroutine onestepscf(ctx, data, mol, bas, wfn, ints, auxints, vecp, list, level
+       type(electric_field), intent(in) :: efield
+       !> Dipole moment
+       real(wp), intent(out) :: dipole(3)
+-      !> Electronic solver
+-      class(solver_type), allocatable :: solver
+-      !> Electronic entropy
+-      real(wp) :: ts
+-      !> Error type
++
++      ! PTB electronic solver
++      type(ptb_solver_type) :: ptbsolver
++      ! Error type
+       type(error_type), allocatable :: error
+-      !> Restart data for interaction containers
++      ! Restart data for interaction containers
+       type(container_cache) :: icache
+-      !> Potential type
++      ! Potential type
+       type(potential_type) :: pot
+-      !> Coulomb potential
++      ! Coulomb potential
+       type(coulomb_potential) :: coulomb
+-      !> +U potential
++      ! +U potential
+       type(plusu_potential_type) :: plusu
+-      !> Shell popoulations
++      ! Shell popoulations
+       real(wp), allocatable :: psh(:, :)
+-      !> Temporary Mulliken populations
++      ! Temporary Mulliken populations
+       real(wp), allocatable :: mulliken_qsh(:, :), mulliken_qat(:, :)
+-      !> Tmp variable for dipole moment
++      ! Tmp variable for dipole moment
+       real(wp) :: tmpdip(3)
+       integer :: i, j, iat, izp, ii, ish
+ 
+       !> debug mode
+       logical, parameter :: debug = .false.
+ 
+-      !> Solver for the effective Hamiltonian
+-      call ctx%new_solver(solver, bas%nao)
+-
+       !> Reset H0 matrix
+       ints%hamiltonian = 0.0_wp
+       !> H0 matrix
+@@ -362,7 +357,8 @@ subroutine onestepscf(ctx, data, mol, bas, wfn, ints, auxints, vecp, list, level
+          end do
+       endif
+ 
+-      call get_density(wfn, solver, ints, ts, error, ptbGlobals%geps, ptbGlobals%geps0)
++      call new_ptb_solver(ptbsolver, wfn%nel, wfn%kt, ptbGlobals%geps, ptbGlobals%geps0)
++      call ptbsolver%get_density(wfn%coeff, ints%overlap, wfn%emo, wfn%focc, wfn%density, error)
+       if (allocated(error)) then
+          call ctx%set_error(error)
+          return
+diff --git a/src/ptb/solver.F90 b/src/ptb/solver.F90
+new file mode 100644
+index 000000000..c6176b688
+--- /dev/null
++++ b/src/ptb/solver.F90
+@@ -0,0 +1,155 @@
++! This file is part of xtb.
++!
++! Copyright (C) 2023 Marcel Mueller
++!
++! xtb is free software: you can redistribute it and/or modify it under
++! the terms of the GNU Lesser General Public License as published by
++! the Free Software Foundation, either version 3 of the License, or
++! (at your option) any later version.
++!
++! xtb is distributed in the hope that it will be useful,
++! but WITHOUT ANY WARRANTY; without even the implied warranty of
++! MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++! GNU Lesser General Public License for more details.
++!
++! You should have received a copy of the GNU Lesser General Public License
++! along with xtb.  If not, see <https://www.gnu.org/licenses/>.
++
++#ifndef WITH_TBLITE
++#define WITH_TBLITE 0
++#endif
++
++!> Solver for the PTB method based on the diagonalization solver from tblite
++module xtb_ptb_solver
++   
++#if WITH_TBLITE
++
++   use mctc_env, only : sp, dp, wp, error_type
++   use tblite_blas, only : gemm
++   use tblite_lapack_sygvd, only : sygvd_solver
++   use tblite_wavefunction_fermi, only : get_fermi_filling
++   implicit none
++   private
++
++   public :: new_ptb_solver
++
++   !> Abstract base class for electronic solvers
++   type, public, extends(sygvd_solver) :: ptb_solver_type
++      !> Linear regression cofactors for the orbital energies
++      real(wp) :: keps_param
++      real(wp) :: keps0_param
++   contains
++      procedure :: get_density
++      procedure :: delete
++   end type ptb_solver_type
++
++contains
++
++   subroutine new_ptb_solver(self, nel, kt, keps_param, keps0_param)
++      type(ptb_solver_type), intent(out) :: self
++      real(wp), intent(in) :: nel(:)
++      real(wp), intent(in) :: kt
++      real(wp), intent(in), optional :: keps_param
++      real(wp), intent(in), optional :: keps0_param
++      self%nel = nel
++      self%kt = kt
++
++      if (present(keps_param)) then
++         self%keps_param = keps_param
++      else
++         self%keps_param = 0.0_wp
++      end if
++
++      if (present(keps0_param)) then
++         self%keps0_param = keps0_param
++      else
++         self%keps0_param = 0.0_wp
++      end if
++   end subroutine
++
++   subroutine get_density(self, hmat, smat, eval, focc, density, error)
++      !> Solver for the general eigenvalue problem
++      class(ptb_solver_type), intent(inout) :: self
++      !> Overlap matrix
++      real(wp), contiguous, intent(in) :: smat(:, :)
++      !> Hamiltonian matrix, contains eigenvectors on output
++      real(wp), contiguous, intent(inout) :: hmat(:, :, :)
++      !> Eigenvalues
++      real(wp), contiguous, intent(inout) :: eval(:, :)
++      !> Occupation numbers
++      real(wp), contiguous, intent(inout) :: focc(:, :)
++      !> Density matrix
++      real(wp), contiguous, intent(inout) :: density(:, :, :)
++      !> Error handling
++      type(error_type), allocatable, intent(out) :: error
++
++      real(wp) :: e_fermi
++      integer :: nspin, spin, homo
++
++      nspin = min(size(eval, 2), size(hmat, 3), size(density, 3))
++
++      select case (nspin)
++      case default
++         call self%solve(hmat(:, :, 1), smat, eval(:, 1), error)
++         if (allocated(error)) return
++
++         ! Linear shift of the orbital energies
++         eval(:, 1) = eval(:, 1) * (1.0_wp + self%keps_param) + self%keps0_param
++
++         focc(:, :) = 0.0_wp
++         do spin = 1, 2
++            call get_fermi_filling(self%nel(spin), self%kt, eval(:, 1), &
++               & homo, focc(:, spin), e_fermi)
++         end do
++         focc(:, 1) = focc(:, 1) + focc(:, 2)
++         focc(:, 2) = focc(:, 1) - 2.0_wp * focc(:, 2)
++         call get_density_matrix(focc(:, 1), hmat(:, :, 1), density(:, :, 1))     
++      case (2)
++         hmat(:, :, :) = 2.0_wp * hmat
++         do spin = 1, 2
++            call self%solve(hmat(:, :, spin), smat, eval(:, spin), error)
++            if (allocated(error)) return
++
++            ! Linear shift of the orbital energies
++            eval(:, spin) = eval(:, spin) * (1.0_wp + self%keps_param) + self%keps0_param
++
++            call get_fermi_filling(self%nel(spin), self%kt, eval(:, spin), &
++               & homo, focc(:, spin), e_fermi)
++            call get_density_matrix(focc(:, spin), hmat(:, :, spin), &
++               & density(:, :, spin))
++         end do
++      end select
++   end subroutine get_density
++
++   !> Get the density matrix from the coefficients and occupation numbers
++   subroutine get_density_matrix(focc, coeff, pmat)
++      !> Occupation numbers
++      real(wp), intent(in) :: focc(:)
++      !> Coefficients of the wavefunction
++      real(wp), contiguous, intent(in) :: coeff(:, :)
++      !> Density matrix to be computed
++      real(wp), contiguous, intent(out) :: pmat(:, :)
++
++      real(wp), allocatable :: scratch(:, :)
++      integer :: iao, jao
++
++      allocate(scratch(size(pmat, 1), size(pmat, 2)))
++      !$omp parallel do collapse(2) default(none) schedule(runtime) &
++      !$omp shared(scratch, coeff, focc, pmat) private(iao, jao)
++      do iao = 1, size(pmat, 1)
++         do jao = 1, size(pmat, 2)
++            scratch(jao, iao) = coeff(jao, iao) * focc(iao)
++         end do
++      end do
++      call gemm(scratch, coeff, pmat, transb='t')
++   end subroutine get_density_matrix
++
++   !> Delete the solver instance
++   subroutine delete(self)
++      !> Solver for the general eigenvalue problem
++      class(ptb_solver_type), intent(inout) :: self
++
++   end subroutine delete
++
++#endif
++end module xtb_ptb_solver
+diff --git a/src/ptb/twostepscf.F90 b/src/ptb/twostepscf.F90
+index 97a15a943..296e3cf73 100644
+--- a/src/ptb/twostepscf.F90
++++ b/src/ptb/twostepscf.F90
+@@ -29,13 +29,11 @@ module xtb_ptb_scf
+    use tblite_basis_type, only: basis_type, get_cutoff
+    use tblite_blas, only: gemv
+    use tblite_context, only: context_type
+-   use tblite_scf_solver, only: solver_type
+    use tblite_scf_iterator, only: get_qat_from_qsh
+    use tblite_adjlist, only: adjacency_list, new_adjacency_list
+    use tblite_cutoff, only: get_lattice_points
+    use tblite_wavefunction, only: wavefunction_type, get_alpha_beta_occupation
+    use tblite_wavefunction_fermi, only: get_fermi_filling
+-   use tblite_wavefunction_type, only: get_density_matrix
+    use tblite_wavefunction_mulliken, only: get_mulliken_atomic_multipoles, &
+       & get_mulliken_shell_charges, get_mayer_bond_orders, get_molecular_quadrupole_moment, &
+       & get_molecular_dipole_moment
+@@ -59,13 +57,14 @@ module xtb_ptb_scf
+    use xtb_ptb_integral_types, only: aux_integral_type, new_aux_integral
+    use xtb_ptb_coulomb, only: coulomb_potential
+    use xtb_ptb_plusu, only: plusu_potential_type
++   use xtb_ptb_solver, only : ptb_solver_type, new_ptb_solver
+ 
+    use xtb_readin, only: bool2string, bool2int
+ 
+    implicit none
+    private
+ 
+-   public :: twostepscf, get_density
++   public :: twostepscf
+ 
+    character(len=*), private, parameter :: outfmt = &
+                                            '(9x,"::",1x,a,f23.12,1x,a,1x,"::")'
+@@ -103,7 +102,7 @@ subroutine twostepscf(ctx, wfn, data, mol, bas, cbas, ints, auxints, &
+       !> Auxiliary integral type
+       type(aux_integral_type), intent(out) :: auxints
+       !> Initialized EEQ model
+-      type(mchrg_model_type), intent(in) :: eeqmodel
++      class(mchrg_model_type), intent(in) :: eeqmodel
+       !> Molecular dipole moment
+       real(wp), intent(out) :: dipole(3)
+       !> Molecular quadrupole moment
+@@ -120,52 +119,48 @@ subroutine twostepscf(ctx, wfn, data, mol, bas, cbas, ints, auxints, &
+       real(wp), allocatable, intent(out) :: v_es_sh(:)
+       !> (optional) Electric field
+       real(wp), intent(in), optional :: efield(:)
+-      !> Electronic solver
+-      class(solver_type), allocatable :: solver
+-      !> Error type
++
++      ! PTB electronic solver
++      type(ptb_solver_type) :: ptbsolver
++      ! Error type
+       type(error_type), allocatable :: error
+-      !> Coulomb potential
++      ! Coulomb potential
+       type(coulomb_potential) :: coulomb
+-      !> +U potential
++      ! +U potential
+       type(plusu_potential_type) :: plusu
+-      !> Potential type
++      ! Potential type
+       type(potential_type) :: pot
+-      !> H0 basis in second iteration
++      ! H0 basis in second iteration
+       type(basis_type), allocatable :: bas_h0
+-      !> Restart data for interaction containers
++      ! Restart data for interaction containers
+       type(container_cache) :: icache
+-      !> Electric field object
++      ! Electric field object
+       type(electric_field) :: efield_object
+       real(wp), allocatable :: expscal_h0_2nditer(:, :)
+-      !> Loop variables
++      ! Loop variables
+       integer :: i, j, isp, izp, iat, ish, iid, is
+-      !> Coordination numbers
++      ! Coordination numbers
+       real(wp), intent(out) :: cn_star(mol%nat)
+-      real(wp) :: cn(mol%nat), cn_eeq(mol%nat)
++      real(wp) :: cn(mol%nat), cn_eeq(mol%nat), qloc_eeq(mol%nat)
+       real(wp) :: radii(mol%nid)
+-      !> Lattice points
++      ! Lattice points
+       real(wp), allocatable :: lattr(:, :)
+-      !> Cutoff for lattice points
++      ! Cutoff for lattice points
+       real(wp) :: cutoff
+-      !> Number of electrons
++      ! Number of electrons
+       real(wp) :: nel
+-      !> Shell populations required for Pauli XC potential
++      ! Shell populations required for Pauli XC potential
+       real(wp), allocatable :: psh(:, :)
+-      !> Electronic entropy
+-      real(wp) :: ts
+-      !> Tmp variable for dipole moment
++      ! Tmp variable for dipole moment
+       real(wp) :: tmpdip(3)
+       real(wp), allocatable :: mulliken_qsh(:, :), mulliken_qat(:, :)
+ 
+-      !> debug mode
++      ! debug mode
+       logical, parameter :: alternative_dipole = .false.
+       logical, parameter :: debug(15) = [ .false., .false., .false., .false., .false., &
+                               .false., .false., .false., .false., .false., .false., &
+                               .false., .false., .false., .false.] 
+ 
+-      !> Solver for the effective Hamiltonian
+-      call ctx%new_solver(solver, bas%nao)
+-
+       if (present(efield)) then
+          efield_object = electric_field(efield)
+       end if
+@@ -328,7 +323,11 @@ subroutine twostepscf(ctx, wfn, data, mol, bas, cbas, ints, auxints, &
+       !   |______| |_|  \___|  \___|  \__| |_|     \___/
+ 
+       !> EEQ call
+-      call eeqmodel%solve(mol, cn_eeq, qvec=wfn%qat(:, 1))
++      call eeqmodel%solve(mol, error, cn_eeq, qloc_eeq, qvec=wfn%qat(:, 1))
++      if (allocated(error)) then
++         call ctx%set_error(error)
++         return
++      end if
+       if (debug(8)) then !##### DEV WRITE #####
+          write (*, *) "EEQ charges:"
+          do i = 1, mol%nat
+@@ -476,7 +475,9 @@ subroutine twostepscf(ctx, wfn, data, mol, bas, cbas, ints, auxints, &
+          return
+       end if
+       call get_alpha_beta_occupation(wfn%nocc, wfn%nuhf, wfn%nel(1), wfn%nel(2))
+-      call get_density(wfn, solver, ints, ts, error)
++
++      call new_ptb_solver(ptbsolver, wfn%nel, wfn%kt)
++      call ptbsolver%get_density(wfn%coeff, ints%overlap, wfn%emo, wfn%focc, wfn%density, error)
+       if (allocated(error)) then
+          call ctx%set_error(error)
+          return
+@@ -591,7 +592,8 @@ subroutine twostepscf(ctx, wfn, data, mol, bas, cbas, ints, auxints, &
+       call plusu%get_potential(mol, bas, wfn%density(:, :, 1), wfn%coeff(:, :, 1))
+ 
+       ints%hamiltonian = wfn%coeff(:, :, 1)
+-      call get_density(wfn, solver, ints, ts, error, ptbGlobals%geps, ptbGlobals%geps0)
++      call new_ptb_solver(ptbsolver, wfn%nel, wfn%kt, ptbGlobals%geps, ptbGlobals%geps0)
++      call ptbsolver%get_density(wfn%coeff, ints%overlap, wfn%emo, wfn%focc, wfn%density, error)
+       if (allocated(error)) then
+          call ctx%set_error(error)
+          return
+@@ -627,7 +629,7 @@ contains
+ 
+       !> Get the WBOs
+       allocate (wbo(mol%nat, mol%nat, wfn%nspin))
+-      call get_mayer_bond_orders(bas, ints%overlap, wfn%density, wbo)
++      call get_mayer_bond_orders(mol, bas, ints%overlap, wfn%density, wbo)
+ 
+       !> Save some memory by deallocating the second-iteration-specific HO overlap integrals
+       deallocate (auxints%overlap_h0_2)
+@@ -638,71 +640,6 @@ subroutine twostepscf(ctx, wfn, data, mol, bas, cbas, ints, auxints, &
+ 
+    end subroutine twostepscf
+ 
+-   !> TAKEN OVER FROM TBLITE - modified in order to use the PTB parameters
+-   subroutine get_density(wfn, solver, ints, ts, error, keps_param, keps0_param)
+-      !> Tight-binding wavefunction data
+-      type(wavefunction_type), intent(inout) :: wfn
+-      !> Solver for the general eigenvalue problem
+-      class(solver_type), intent(inout) :: solver
+-      !> Integral container
+-      type(integral_type), intent(in) :: ints
+-      !> Electronic entropy
+-      real(wp), intent(out) :: ts
+-      !> Error handling
+-      type(error_type), allocatable, intent(out) :: error
+-      !> Linear regression cofactors for the orbital energies
+-      real(wp), intent(in), optional :: keps_param, keps0_param
+-      real(wp) :: keps, keps0
+-
+-      real(wp) :: e_fermi, stmp(2)
+-      real(wp), allocatable :: focc(:)
+-      integer :: spin
+-
+-      if (present(keps_param)) then
+-         keps = keps_param
+-      else
+-         keps = 0.0_wp
+-      end if
+-      if (present(keps0_param)) then
+-         keps0 = keps0_param
+-      else
+-         keps0 = 0.0_wp
+-      end if
+-
+-      select case (wfn%nspin)
+-      case default
+-         call solver%solve(wfn%coeff(:, :, 1), ints%overlap, wfn%emo(:, 1), error)
+-         if (allocated(error)) return
+-         wfn%emo(:, 1) = wfn%emo(:, 1) * (1.0_wp + keps) + keps0
+-
+-         allocate (focc(size(wfn%focc, 1)))
+-         wfn%focc(:, :) = 0.0_wp
+-         do spin = 1, 2
+-            call get_fermi_filling(wfn%nel(spin), wfn%kt, wfn%emo(:, 1), &
+-               & wfn%homo(spin), focc, e_fermi)
+-            call get_electronic_entropy(focc, wfn%kt, stmp(spin))
+-            wfn%focc(:, 1) = wfn%focc(:, 1) + focc
+-         end do
+-         ts = sum(stmp)
+-
+-         call get_density_matrix(wfn%focc(:, 1), wfn%coeff(:, :, 1), wfn%density(:, :, 1))
+-      case (2)
+-         wfn%coeff = 2 * wfn%coeff
+-         do spin = 1, 2
+-            call solver%solve(wfn%coeff(:, :, spin), ints%overlap, wfn%emo(:, spin), error)
+-            if (allocated(error)) return
+-            wfn%emo(:, 1) = wfn%emo(:, 1) * (1.0_wp + keps) + keps0
+-
+-            call get_fermi_filling(wfn%nel(spin), wfn%kt, wfn%emo(:, spin), &
+-               & wfn%homo(spin), wfn%focc(:, spin), e_fermi)
+-            call get_electronic_entropy(wfn%focc(:, spin), wfn%kt, stmp(spin))
+-            call get_density_matrix(wfn%focc(:, spin), wfn%coeff(:, :, spin), &
+-               & wfn%density(:, :, spin))
+-         end do
+-         ts = sum(stmp)
+-      end select
+-   end subroutine get_density
+-
+    pure function id_to_atom(mol, idparam) result(atomparam)
+       !> Molecular structure data
+       type(structure_type), intent(in) :: mol
+diff --git a/src/tblite/calculator.F90 b/src/tblite/calculator.F90
+index 4fa3c773e..9253ec5e8 100644
+--- a/src/tblite/calculator.F90
++++ b/src/tblite/calculator.F90
+@@ -34,7 +34,8 @@ module xtb_tblite_calculator
+    use tblite_results, only : results_type
+    use tblite_spin, only : spin_polarization, new_spin_polarization
+    use tblite_solvation, only : new_solvation, solvation_type
+-   use tblite_wavefunction, only : wavefunction_type, new_wavefunction, sad_guess, eeq_guess
++   use tblite_wavefunction, only : wavefunction_type, new_wavefunction, &
++      & sad_guess, eeq_guess, eeqbc_guess
+    use tblite_xtb_calculator, only : xtb_calculator, new_xtb_calculator
+    use tblite_xtb_gfn2, only : new_gfn2_calculator, export_gfn2_param
+    use tblite_xtb_gfn1, only : new_gfn1_calculator, export_gfn1_param
+@@ -252,7 +253,9 @@ subroutine newTBLiteWavefunction(env, mol, calc, chk)
+       case("sad")
+          call sad_guess(struc, calc%tblite, wfn)
+       case("eeq")
+-         call eeq_guess(struc, calc%tblite, wfn)
++         call eeq_guess(struc, calc%tblite, wfn, error)
++      case("eeqbc")
++         call eeqbc_guess(struc, calc%tblite, wfn, error)
+       case("ceh")
+          block 
+             use tblite_context, only : context_type, context_terminal
+diff --git a/src/tblite/mapping.F90 b/src/tblite/mapping.F90
+index 9431dd2cf..f813c2d98 100644
+--- a/src/tblite/mapping.F90
++++ b/src/tblite/mapping.F90
+@@ -81,7 +81,8 @@ subroutine convert_tblite_to_results(results, mol, chk, energy, converged, gradi
+    !> (analytical) gradients
+    real(wp), optional, intent(in) :: gradient(:,:)
+ 
+-   
++   integer :: homo
++
+    results%e_total = energy
+    results%converged = converged
+ 
+@@ -91,7 +92,11 @@ subroutine convert_tblite_to_results(results, mol, chk, energy, converged, gradi
+    if (all(results%dipole == 0.0_wp)) then
+       results%dipole = sum(chk%tblite%dpat(:, :, 1), 2) + matmul(mol%xyz, chk%tblite%qat(: ,1))
+    endif
+-   results%hl_gap = (chk%tblite%emo(chk%tblite%homo(1) + 1, 1) - chk%tblite%emo(chk%tblite%homo(1), 1)) * autoev
++
++   ! we need to find the HOMO/LUMO first
++   homo = merge(chk%tblite%nel(1)+1, chk%tblite%nel(1), &
++      & mod(chk%tblite%nel(1), 1.0_wp) > 0.5_wp)
++   results%hl_gap = (chk%tblite%emo(homo + 1, 1) - chk%tblite%emo(homo, 1)) * autoev
+ 
+ #endif
+ 
+@@ -109,6 +114,16 @@ subroutine from_tblite_wfn(wfn, tblite)
+    type(TWavefunction), intent(inout) :: wfn 
+    type(wavefunction_type), intent(in) :: tblite
+ 
++   integer :: homo(2)
++
++   ! Need to find the HOMO/LUMO first
++   homo(1) = merge(tblite%nel(1)+1, tblite%nel(1), mod(tblite%nel(1), 1.0_wp) > 0.5_wp)
++   if (size(tblite%nel, 1) == 2) then
++      homo(2) = merge(tblite%nel(2)+1, tblite%nel(2), mod(tblite%nel(2), 1.0_wp) > 0.5_wp)
++   else
++      homo(2) = homo(1)
++   end if
++
+    wfn%dipm = tblite%dpat(:, :, 1)
+    wfn%nel = nint(tblite%nocc)
+    wfn%P = tblite%density(:, :, 1)
+@@ -119,9 +134,9 @@ subroutine from_tblite_wfn(wfn, tblite)
+    wfn%focc(:) = tblite%focc(:, 1)
+    wfn%emo = tblite%emo(:, 1) * autoev
+    wfn%C = tblite%coeff(:, :, 1)
+-   wfn%ihomo = tblite%homo(1)
+-   wfn%ihomoa = tblite%homo(1)
+-   wfn%ihomob = tblite%homo(2)
++   wfn%ihomo = homo(1)
++   wfn%ihomoa = homo(1)
++   wfn%ihomob = homo(2)
+    wfn%qp = tblite%qpat(:, :, 1)
+ 
+ end subroutine from_tblite_wfn
+diff --git a/test/unit/test_ptb.F90 b/test/unit/test_ptb.F90
+index 5e585f90d..d8c201de1 100644
+--- a/test/unit/test_ptb.F90
++++ b/test/unit/test_ptb.F90
+@@ -107,9 +107,10 @@ subroutine test_ptb_basis(error)
+    end subroutine test_ptb_basis
+ 
+    subroutine test_ptb_eeq(error)
++      use mctc_env, only : mctc_error_type => error_type
+       use xtb_ptb_param, only: ptbGlobals, initPTB
+       use xtb_ptb_ncoord, only: ncoord_erf
+-      use multicharge_model, only: new_mchrg_model, mchrg_model_type
++      use multicharge_model, only: new_eeq_model, mchrg_model_type, eeq_model
+       use xtb_ptb_data, only: TPTBData
+ 
+       type(error_type), allocatable, intent(out) :: error
+@@ -120,11 +121,14 @@ subroutine test_ptb_eeq(error)
+       !> Structure type (mctc-lib)
+       type(structure_type) :: mol
+       !> EEQ Model
+-      type(mchrg_model_type) :: eeqmodel
+-      real(wp), allocatable :: cn_eeq(:)
++      class(mchrg_model_type), allocatable :: eeqmodel
++
++      real(wp), allocatable :: cn_eeq(:), qloc(:)
+       integer :: i
+       !> EEQ charges
+       real(wp), allocatable :: q_eeq(:)
++      type(eeq_model), allocatable :: tmp_eeqmodel
++      type(mctc_error_type), allocatable :: local_error
+ 
+       real(wp), parameter :: q_exp(16) = [ &
+       &  0.191209985_wp, &
+@@ -150,10 +154,20 @@ subroutine test_ptb_eeq(error)
+       call initPTB(ptbData, mol%num)
+       allocate (cn_eeq(mol%nat))
+       call ncoord_erf(mol, ptbGlobals%kerfcn_eeq, 25.0_wp, cn_eeq)
+-      call new_mchrg_model(eeqmodel, chi=ptbData%eeq%chi, &
+-      & rad=ptbData%eeq%alp, eta=ptbData%eeq%gam, kcn=ptbData%eeq%cnf)
++      allocate(tmp_eeqmodel)
++      call new_eeq_model(tmp_eeqmodel, mol, local_error, chi=ptbData%eeq%chi, &
++      & rad=ptbData%eeq%alp, eta=ptbData%eeq%gam, kcnchi=ptbData%eeq%cnf)
++      if (allocated(local_error)) then
++         call test_failed(error, 'Could not initialize EEQ model')
++         return
++      end if 
++      call move_alloc(tmp_eeqmodel, eeqmodel)
+       allocate (q_eeq(mol%nat))
+-      call eeqmodel%solve(mol, cn_eeq, qvec=q_eeq)
++      call eeqmodel%solve(mol, local_error, cn_eeq, qloc, qvec=q_eeq)
++      if (allocated(local_error)) then
++         call test_failed(error, 'Could not solve the EEQ model')
++         return
++      end if
+ 
+       do i = 1, mol%nat
+          call check_(error, q_eeq(i), q_exp(i), thr=thr, &
